@@ -1,0 +1,79 @@
+# iyulab/forge-fmea-releases/.github/workflows/build.yml
+# Triggered by iyulab/forge (private) via repository_dispatch
+# Checks out the monorepo, builds forge-fmea, publishes release here
+
+name: Build & Release
+
+on:
+  repository_dispatch:
+    types: [build-release]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          repository: iyulab/forge
+          ref: ${{ github.event.client_payload.sha }}
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Sync version
+        shell: bash
+        env:
+          VERSION: ${{ github.event.client_payload.version }}
+        run: |
+          echo "Building Forge-FMEA v$VERSION"
+          cd apps/forge-fmea
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = process.env.VERSION;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install monorepo dependencies
+        run: npm install
+
+      - name: Build .NET engine
+        working-directory: apps/forge-fmea
+        run: npm run build:engine
+
+      - name: Resolve electron version
+        id: electron
+        working-directory: apps/forge-fmea
+        shell: bash
+        run: |
+          VER=$(node -e "console.log(require('./package.json').devDependencies.electron.replace('^',''))")
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Build & Publish
+        working-directory: apps/forge-fmea
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ELECTRON_VER: ${{ steps.electron.outputs.version }}
+        run: npx electron-vite build && npx electron-builder --win --config electron-builder.config.ts -c.electronVersion=$ELECTRON_VER --publish always
+
+      - name: Delete old releases (keep latest 3)
+        uses: dev-drprasad/delete-older-releases@v0.3.4
+        with:
+          keep_latest: 3
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
